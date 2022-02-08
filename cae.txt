@@ -1,0 +1,217 @@
+
+import os
+os.environ["CUDA_VISIBLE_DEVICES"]="0" #for GPU usage
+#import matplotlib as mpl
+#mpl.use('Agg')
+import numpy as np
+from keras.layers import Input, Dense, Conv2D, MaxPooling2D, UpSampling2D, Flatten, Reshape
+from keras.models import Model
+from keras import backend as K
+from keras import callbacks, optimizers
+
+from matplotlib import pyplot as plt
+from astropy.io import fits
+from skimage import exposure
+
+from keras.layers import Input, Dense, Conv2D, MaxPooling2D, UpSampling2D, Flatten, Reshape, GlobalAveragePooling2D, multiply
+from keras.layers import GlobalAveragePooling2D, GlobalMaxPooling2D, Reshape, Dense, Multiply, Permute, Concatenate, Conv2D, Add, Activation, Lambda
+
+
+#------------------------------------------------------------------------#
+import time
+Tstart = time.time() #Timer start
+
+
+def getdate():
+    import datetime
+    import time
+    year=str(datetime.datetime.now().year)
+    month=str(datetime.datetime.now().month)
+    day=str(datetime.datetime.now().day)
+    time=str(time.time())
+    #print(year+'-'+month+'-'+day+'-'+time)
+    return(year+'-'+month+'-'+day+'-'+time)
+## MODEL PRE-SETTING ##
+
+
+def cae(embedding_fea):
+    input_img = Input(shape=(64, 64, 1))  # adapt this if using `channels_first` image data format
+
+    x = Conv2D(128, (4, 4), activation='relu', padding='same')(input_img) #(64,64,128)
+#     x = cbam(x)
+    x = MaxPooling2D((2, 2), padding='same')(x) #(32, 32, 128)
+    x = Conv2D(64, (4, 4), activation='relu', padding='same')(x) #(32, 32, 64)
+#     x = cbam(x)
+    x = MaxPooling2D((2, 2), padding='same')(x) #(16, 16, 64)
+    x = Conv2D(32, (3, 3), activation='relu', padding='same')(x) #(16, 16, 32)
+#     x = cbam(x)
+    x = MaxPooling2D((2, 2), padding='same')(x) #(8, 8, 32)
+    x = Conv2D(16, (3, 3), activation='relu', padding='same')(x) #(8, 8, 16)
+#     x = cbam(x)
+    x = MaxPooling2D((2, 2), padding='same')(x) #(4, 4, 16)
+    x = Conv2D(8, (2, 2), activation='relu', padding='same')(x) #(4, 4, 8)
+#     x = cbam(x)
+
+    x = Flatten()(x)
+    x = Dense(units=64, activation='relu')(x)
+    x = Dense(units=32, activation='relu')(x)
+#     x = Dense(units=16, activation='relu')(x)
+    encoded = Dense(units=embedding_fea, activation='relu', name='embedding')(x)
+#     x = Dense(units=16, activation='relu')(encoded)
+    x = Dense(units=32, activation='relu')(encoded)
+    x = Dense(units=64, activation='relu')(x)
+    x = Dense(units=128, activation='relu')(x)
+    x = Reshape((4, 4, 8))(x)
+
+    x = Conv2D(8, (2, 2), activation='relu', padding='same')(x) #(4, 4, 8)
+    x = UpSampling2D((2, 2))(x) #(8, 8, 8)
+    x = Conv2D(16, (3, 3), activation='relu', padding='same')(x) #(8, 8, 16)
+    x = UpSampling2D((2, 2))(x) #(16, 16, 16)
+    x = Conv2D(32, (3, 3), activation='relu', padding='same')(x) #(16, 16, 32)
+    x = UpSampling2D((2, 2))(x) #(32, 32, 32)
+    x = Conv2D(64, (4, 4), activation='relu',padding = 'same')(x) #(30, 30, 64)
+    x = UpSampling2D((2, 2))(x) #(64, 64, 64)
+    decoded = Conv2D(1, (4, 4), activation='sigmoid',padding = 'same')(x) #(64, 64, 128)
+    
+    
+    
+     
+
+    autoencoder = Model(input_img, decoded)
+    optimizer_adam = optimizers.Adam(lr=0.001)
+    autoencoder.compile(optimizer=optimizer_adam, loss='binary_crossentropy')
+
+    print(autoencoder.summary())
+    return autoencoder
+
+
+def cbam(cbam_feature, ratio=8):
+
+    cbam_feature = channel_attention(cbam_feature, ratio)
+    cbam_feature = spatial_attention(cbam_feature)
+    return cbam_feature
+
+def channel_attention(input_feature, ratio=8):
+
+    #channel_axis = 1 if K.image_data_format() == "channels_first" else -1
+    #channel = input_feature._keras_shape[-1]
+    channel = input_feature.shape.as_list()[-1]
+
+    shared_layer_one = Dense(channel//ratio, activation='relu', kernel_initializer='he_normal', use_bias=True, bias_initializer='zeros')
+    shared_layer_two = Dense(channel, kernel_initializer='he_normal', use_bias=True, bias_initializer='zeros')
+
+    avg_pool = GlobalAveragePooling2D()(input_feature)    
+    avg_pool = Reshape((1,1,channel))(avg_pool)
+    #assert avg_pool._keras_shape[1:] == (1,1,channel)
+    avg_pool = shared_layer_one(avg_pool)
+    #assert avg_pool._keras_shape[1:] == (1,1,channel//ratio)
+    avg_pool = shared_layer_two(avg_pool)
+    #assert avg_pool._keras_shape[1:] == (1,1,channel)
+
+    max_pool = GlobalMaxPooling2D()(input_feature)
+    max_pool = Reshape((1,1,channel))(max_pool)
+    #assert max_pool._keras_shape[1:] == (1,1,channel)
+    max_pool = shared_layer_one(max_pool)
+    #assert max_pool._keras_shape[1:] == (1,1,channel//ratio)
+    max_pool = shared_layer_two(max_pool)
+    #assert max_pool._keras_shape[1:] == (1,1,channel)
+
+    cbam_feature = Add()([avg_pool,max_pool])
+    cbam_feature = Activation('sigmoid')(cbam_feature)
+
+    '''
+    if K.image_data_format() == "channels_first":
+        cbam_feature = Permute((3, 1, 2))(cbam_feature)
+    '''
+
+    return Multiply()([input_feature, cbam_feature])
+
+def spatial_attention(input_feature):
+    kernel_size = 7
+    '''
+    if K.image_data_format() == "channels_first":
+        channel = input_feature._keras_shape[1]
+        cbam_feature = Permute((2,3,1))(input_feature)
+    else:
+        channel = input_feature._keras_shape[-1]
+        cbam_feature = input_feature
+    '''
+    #channel = input_feature._keras_shape[-1]
+    channel = input_feature.shape.as_list()[-1]
+    cbam_feature = input_feature
+
+    avg_pool = Lambda(lambda x: K.mean(x, axis=3, keepdims=True))(cbam_feature)
+    assert avg_pool._keras_shape[-1] == 1
+    max_pool = Lambda(lambda x: K.max(x, axis=3, keepdims=True))(cbam_feature)
+    assert max_pool._keras_shape[-1] == 1
+    concat = Concatenate(axis=3)([avg_pool, max_pool])
+    assert concat._keras_shape[-1] == 2
+    cbam_feature = Conv2D(filters = 1,kernel_size=kernel_size,strides=1,padding='same',activation='sigmoid',kernel_initializer='he_normal',use_bias=False)(concat)	
+    assert cbam_feature._keras_shape[-1] == 1
+
+    '''
+    if K.image_data_format() == "channels_first":
+        cbam_feature = Permute((3, 1, 2))(cbam_feature)
+    '''
+
+    return multiply([input_feature, cbam_feature])
+
+
+def savemodel(savename):
+    autoencoder.save(savename + getdate() + '.h5')
+    print('Savemodel Done!')
+
+def plot_reconstruction():
+    decoded_imgs = autoencoder.predict(image_c) 
+    n = 6
+    plt.figure(figsize=(20, 4))
+    for i in range(n):
+        # display original
+        ax = plt.subplot(2, n, i+1)
+        plt.imshow(image_c[i].reshape(64, 64))
+        ax.get_xaxis().set_visible(False)
+        ax.get_yaxis().set_visible(False)
+
+        # display reconstruction|
+        ax = plt.subplot(2, n, i+1 + n)
+        plt.imshow(decoded_imgs[i].reshape(64, 64))
+        ax.get_xaxis().set_visible(False)
+        ax.get_yaxis().set_visible(False)
+    plt.savefig(savename + '.png')
+    plt.show()
+
+
+if __name__ == "__main__":
+############################################### 
+# preprocess parameter
+###############################################
+  
+    samnum = None
+
+    Time1 = time.time()
+    #X_train = dataprocess(datapath, samnum)
+    Time2=time.time()
+    print('\n', 'DATA PROCESS TIME:', Time2-Time1)
+
+###########################################
+#  model parameter
+###########################################
+    batchsize = 128
+    Epochs = [30, 50,70]
+    Embedding_fea = [28,24,20,16]
+    embedding_floor = 13
+
+    Time3 = time.time()
+    for embedding_fea in Embedding_fea:
+        autoencoder = cae(embedding_fea)
+        print(embedding_fea)
+        Epochtmp = 0
+        for epoch in Epochs:
+            Epochtmp+=epoch
+            autoencoder.fit(image_c, image_c, batch_size=batchsize, epochs=epoch, shuffle=True)
+            Time4 = time.time()
+            print('\n', 'CAE TRAIN TIME:', Time4-Time3)
+            savename = 'CAE_cae_smooth&spiral_forZOO_%depoch%dfea%dF'%(Epochtmp, embedding_fea, embedding_floor)
+            savemodel(savename)
+            plot_reconstruction()
+            print('\n', 'TOTAL TIME:', Time4-Time1)

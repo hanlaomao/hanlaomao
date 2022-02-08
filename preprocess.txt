@@ -1,0 +1,88 @@
+import tensorflow as tf
+import numpy as np
+import pandas as pd
+import random
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import torchvision.transforms as transforms
+from PIL import Image
+
+from keras.preprocessing.image import ImageDataGenerator # inport api
+datagen = ImageDataGenerator(zca_whitening=True)
+
+
+data_dir = "/home/images_training_rev1/"
+label_dir = "home/images_training_label"
+
+label=pd.read_csv(label_dir)
+index1=label['GalaxyID']
+
+label_list=label['class']
+label_list=list(label_list)
+image_list=[]
+
+for i in range(len(index1)):
+    image_list.append(data_dir+str(index1[i])+'.jpg')
+
+temp = np.array([image_list, label_list])
+temp = temp.transpose()
+
+    
+image_list = list(temp[:, 0])
+label_list = list(temp[:, 1])
+label_list = [round(float(i)) for i in label_list] 
+
+image_c, image_id, label_trans = [],[],[]
+idd = 0
+for i in range(len(image_list)):
+    if label_list[i] == 0:
+        image = Image.open(image_list[i])
+        image = image.convert('L')
+        img_width = random.randint(170,240)
+        CenterCrop = transforms.CenterCrop((img_width,img_width))
+        image = CenterCrop(image)
+        image = image.resize((80,80))
+        image = image.resize((64,64))
+
+        
+        image_c.append(np.array(image))
+        image_id.append(idd)
+        idd += 1
+        label_trans.append(label_list[i])
+        
+        image = image.transpose(Image.ROTATE_180)
+        image_c.append(np.array(image))
+        image_id.append(idd)
+        idd += 1
+        label_trans.append(label_list[i])
+        
+    if label_list[i] == 1:
+        image = Image.open(image_list[i])
+        image = image.convert('L')
+        img_width = random.randint(170,240)
+        CenterCrop = transforms.CenterCrop((img_width,img_width))
+        image = CenterCrop(image)
+        image = image.resize((80,80))
+        image = image.resize((64,64))
+
+        image_c.append(np.array(image))
+        image_id.append(idd)
+        idd += 1
+        label_trans.append(label_list[i])
+        image = image.transpose(Image.ROTATE_90)
+        image_c.append(np.array(image))
+        image_id.append(idd)
+        idd += 1
+        label_trans.append(label_list[i])
+        
+        image = image.transpose(Image.ROTATE_90)
+        image_c.append(np.array(image))
+        image_id.append(idd)
+        idd += 1
+        label_trans.append(label_list[i])
+        
+
+dictory = dict(zip(image_id, label_trans))     
+image_c = np.array(image_c)
+image_c = image_c/255
+image_c = image_c.reshape(len(label_trans),64,64,1)
